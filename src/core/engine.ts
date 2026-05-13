@@ -88,6 +88,92 @@ export class GmailEngine {
       .replace(/\//g, '_')
       .replace(/=+$/, '');
   }
+
+
+
+
+
+
+  //         UPLOAD FILE CODE        //
+
+
+
+
+
+
+async uploadFile(labelId: string, filename: string, mimeType: string, fileBuffer: Buffer): Promise<string> {
+  const myEmail = await this.getMyEmail();
+  const boundary = 'gmaildb_boundary';
+
+  const fileBase64 = fileBuffer.toString('base64');
+
+  const raw = [
+    `From: ${myEmail}`,
+    `To: ${myEmail}`,
+    `Subject: gmaildb:file:${filename}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    JSON.stringify({ filename, mimeType, uploadedAt: new Date().toISOString() }),
+    '',
+    `--${boundary}`,
+    `Content-Type: ${mimeType}`,
+    'Content-Transfer-Encoding: base64',
+    `Content-Disposition: attachment; filename="${filename}"`,
+    '',
+    fileBase64,
+    '',
+    `--${boundary}--`,
+  ].join('\r\n');
+
+  const encoded = Buffer.from(raw)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  const res = await this.gmail.users.messages.insert({
+    userId: 'me',
+    requestBody: { raw: encoded, labelIds: [labelId] },
+  });
+  return res.data.id;
+}
+
+async getAttachment(messageId: string): Promise<{ data: Buffer; filename: string; mimeType: string }> {
+  const msg = await this.gmail.users.messages.get({
+    userId: 'me',
+    id: messageId,
+    format: 'full',
+  });
+
+  const parts = msg.data.payload?.parts || [];
+  const attachment = parts.find((p: any) => p.filename && p.body?.attachmentId);
+  const metadata = parts.find((p: any) => p.mimeType === 'text/plain');
+
+  if (!attachment) throw new Error('No attachment found');
+
+  const attRes = await this.gmail.users.messages.attachments.get({
+    userId: 'me',
+    messageId,
+    id: attachment.body.attachmentId,
+  });
+
+  const data = Buffer.from(attRes.data.data, 'base64');
+  const meta = JSON.parse(
+    Buffer.from(metadata?.body?.data || '', 'base64').toString('utf-8')
+  );
+
+  return { data, filename: meta.filename, mimeType: meta.mimeType };
+}
+
+
+
+
+
+
 }
 
 export async function createEngine(): Promise<GmailEngine> {
@@ -95,3 +181,11 @@ export async function createEngine(): Promise<GmailEngine> {
   if (!loadSavedToken(auth)) throw new Error('Not authenticated. Run: npm run auth');
   return new GmailEngine(auth);
 }
+
+
+
+
+
+
+
+

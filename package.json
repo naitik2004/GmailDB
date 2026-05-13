@@ -5,9 +5,17 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "auth": "tsx src/auth/oauth.ts",
-    "demo": "tsx tests/demo.ts"
+    "demo": "tsx tests/demo.ts",
+    "insert": "tsx tests/insert.ts",
+    "find": "tsx tests/find.ts",
+    "delete": "tsx tests/delete.ts",
+    "update": "tsx tests/update.ts",
+    "upload": "tsx tests/upload.ts",
+    "findfiles": "tsx tests/findfiles.ts",
+    "deletefile": "tsx tests/deletefile.ts",
+    "clearcache": "tsx tests/clearcache.ts",
+    "sync": "tsx tests/sync.ts"
   },
   "keywords": [],
   "author": "",
@@ -23,4 +31,5 @@
     "tsx": "^4.7.1",
     "typescript": "^5.3.3"
   }
+  
 }

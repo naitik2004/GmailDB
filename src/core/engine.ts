@@ -8,55 +8,120 @@ export class GmailEngine {
     this.gmail = google.gmail({ version: 'v1', auth });
   }
 
+  private requestQueue: Array<() => Promise<any>> = [];
+  private processing = false;
+  private lastRequestTime = 0;
+  private readonly MIN_DELAY = 100; // 100ms between requests
+
+  private async processQueue(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+
+    while (this.requestQueue.length > 0) {
+      const request = this.requestQueue.shift()!;
+      const now = Date.now();
+      const timeSinceLast = now - this.lastRequestTime;
+
+      if (timeSinceLast < this.MIN_DELAY) {
+        await new Promise(r => setTimeout(r, this.MIN_DELAY - timeSinceLast));
+      }
+
+      await request();
+      this.lastRequestTime = Date.now();
+    }
+
+    this.processing = false;
+  }
+
+  private throttle<T>(fn: () => Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      this.requestQueue.push(async () => {
+        try {
+          resolve(await fn());
+        } catch (err) {
+          reject(err);
+        }
+      });
+      this.processQueue();
+    });
+  }
+
+
+
+
+
+
+
+
+
+
+
+
   async getMyEmail(): Promise<string> {
-    const res = await this.gmail.users.getProfile({ userId: 'me' });
-    return res.data.emailAddress;
+    return this.throttle(async () => {
+      const res = await this.gmail.users.getProfile({ userId: 'me' });
+      return res.data.emailAddress;
+    });
   }
 
   async ensureLabel(name: string): Promise<string> {
-    const res = await this.gmail.users.labels.list({ userId: 'me' });
-    const existing = res.data.labels.find((l: any) => l.name === name);
-    if (existing) return existing.id;
-
-    const created = await this.gmail.users.labels.create({
-      userId: 'me',
-      requestBody: { name, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
+    return this.throttle(async () => {
+      const res = await this.gmail.users.labels.list({ userId: 'me' });
+      const existing = res.data.labels.find((l: any) => l.name === name);
+      if (existing) return existing.id;
+      const created = await this.gmail.users.labels.create({
+        userId: 'me',
+        requestBody: { name, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
+      });
+      return created.data.id;
     });
-    return created.data.id;
   }
 
   async insertMessage(labelId: string, subject: string, body: string): Promise<string> {
-    const myEmail = await this.getMyEmail();
-    const raw = this.buildRaw(myEmail, subject, body);
-
-    const res = await this.gmail.users.messages.insert({
-      userId: 'me',
-      requestBody: { raw, labelIds: [labelId] },
+    return this.throttle(async () => {
+      const myEmail = await this.getMyEmail();
+      const raw = this.buildRaw(myEmail, subject, body);
+      const res = await this.gmail.users.messages.insert({
+        userId: 'me',
+        requestBody: { raw, labelIds: [labelId] },
+      });
+      return res.data.id;
     });
-    return res.data.id;
   }
 
   async listMessages(labelId: string): Promise<any[]> {
-    const res = await this.gmail.users.messages.list({
-      userId: 'me',
-      labelIds: [labelId],
-      maxResults: 100,
+    return this.throttle(async () => {
+      const res = await this.gmail.users.messages.list({
+        userId: 'me',
+        labelIds: [labelId],
+        maxResults: 100,
+      });
+      return res.data.messages || [];
     });
-    return res.data.messages || [];
   }
 
   async getMessage(id: string): Promise<any> {
-    const res = await this.gmail.users.messages.get({
-      userId: 'me',
-      id,
-      format: 'full',
+    return this.throttle(async () => {
+      const res = await this.gmail.users.messages.get({
+        userId: 'me',
+        id,
+        format: 'full',
+      });
+      return res.data;
     });
-    return res.data;
   }
 
   async trashMessage(id: string): Promise<void> {
-    await this.gmail.users.messages.trash({ userId: 'me', id });
+    return this.throttle(async () => {
+      await this.gmail.users.messages.trash({ userId: 'me', id });
+    });
   }
+
+
+
+
+
+
 
   parseBody(message: any): string {
     const parts = message.payload?.parts;

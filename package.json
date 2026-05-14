@@ -1,16 +1,18 @@
 {
   "name": "gmaildb",
-  "version": "1.0.0",
-  "description": "Gmail as a database SDK",
+  "version": "0.1.0",
+  "description": "Use Gmail as a backend database engine. One SDK for database, file storage, and more.",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
+    "build": "tsc",
     "auth": "tsx src/auth/oauth.ts",
     "demo": "tsx tests/demo.ts",
     "insert": "tsx tests/insert.ts",
     "find": "tsx tests/find.ts",
-    "delete": "tsx tests/delete.ts",
     "update": "tsx tests/update.ts",
+    "delete": "tsx tests/delete.ts",
     "upload": "tsx tests/upload.ts",
     "findfiles": "tsx tests/findfiles.ts",
     "deletefile": "tsx tests/deletefile.ts",
@@ -18,9 +20,26 @@
     "sync": "tsx tests/sync.ts",
     "encryption": "tsx tests/encryption.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "gmail",
+    "database",
+    "sdk",
+    "storage",
+    "backend",
+    "nosql",
+    "gmail-api"
+  ],
+  "author": "Naitik Pandey",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/naitik2004/GmailDB"
+  },
+  "homepage": "https://github.com/naitik2004/GmailDB#readme",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "dependencies": {
     "better-sqlite3": "^12.10.0",
     "dotenv": "^16.4.5",
@@ -32,5 +51,4 @@
     "tsx": "^4.7.1",
     "typescript": "^5.3.3"
   }
-  
 }

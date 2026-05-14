@@ -1,80 +1,75 @@
 import { google } from 'googleapis';
 import { createOAuthClient, loadSavedToken } from '../auth/oauth.js';
+import dotenv from 'dotenv';
+import { encrypt, decrypt } from './encryption.js';
+dotenv.config();
+
+const SECRET = process.env.GMAILDB_SECRET || 'default_secret';
+
 
 export class GmailEngine {
   private gmail: any;
+  private myEmail: string | null = null;
+  private labelCache: Map<string, string> = new Map();
+
+  private requestQueue: Array<() => Promise<any>> = [];
+  private processing = false;
+  private lastRequestTime = 0;
+  private readonly MIN_DELAY = 100;
 
   constructor(auth: any) {
     this.gmail = google.gmail({ version: 'v1', auth });
   }
 
-  private requestQueue: Array<() => Promise<any>> = [];
-  private processing = false;
-  private lastRequestTime = 0;
-  private readonly MIN_DELAY = 100; // 100ms between requests
-
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     this.processing = true;
-
     while (this.requestQueue.length > 0) {
       const request = this.requestQueue.shift()!;
       const now = Date.now();
       const timeSinceLast = now - this.lastRequestTime;
-
       if (timeSinceLast < this.MIN_DELAY) {
         await new Promise(r => setTimeout(r, this.MIN_DELAY - timeSinceLast));
       }
-
       await request();
       this.lastRequestTime = Date.now();
     }
-
     this.processing = false;
   }
 
   private throttle<T>(fn: () => Promise<T>): Promise<T> {
     return new Promise((resolve, reject) => {
       this.requestQueue.push(async () => {
-        try {
-          resolve(await fn());
-        } catch (err) {
-          reject(err);
-        }
+        try { resolve(await fn()); }
+        catch (err) { reject(err); }
       });
       this.processQueue();
     });
   }
 
-
-
-
-
-
-
-
-
-
-
-
+  // No throttle — cached after first call
   async getMyEmail(): Promise<string> {
-    return this.throttle(async () => {
-      const res = await this.gmail.users.getProfile({ userId: 'me' });
-      return res.data.emailAddress;
-    });
+    if (this.myEmail) return this.myEmail;
+    const res = await this.gmail.users.getProfile({ userId: 'me' });
+    this.myEmail = res.data.emailAddress;
+    return this.myEmail!;
   }
 
+  // No throttle — cached after first call
   async ensureLabel(name: string): Promise<string> {
-    return this.throttle(async () => {
-      const res = await this.gmail.users.labels.list({ userId: 'me' });
-      const existing = res.data.labels.find((l: any) => l.name === name);
-      if (existing) return existing.id;
-      const created = await this.gmail.users.labels.create({
-        userId: 'me',
-        requestBody: { name, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
-      });
-      return created.data.id;
+    if (this.labelCache.has(name)) return this.labelCache.get(name)!;
+    const res = await this.gmail.users.labels.list({ userId: 'me' });
+    const existing = res.data.labels.find((l: any) => l.name === name);
+    if (existing) {
+      this.labelCache.set(name, existing.id);
+      return existing.id;
+    }
+    const created = await this.gmail.users.labels.create({
+      userId: 'me',
+      requestBody: { name, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
     });
+    this.labelCache.set(name, created.data.id);
+    return created.data.id;
   }
 
   async insertMessage(labelId: string, subject: string, body: string): Promise<string> {
@@ -117,12 +112,6 @@ export class GmailEngine {
     });
   }
 
-
-
-
-
-
-
   parseBody(message: any): string {
     const parts = message.payload?.parts;
     if (parts) {
@@ -154,91 +143,78 @@ export class GmailEngine {
       .replace(/=+$/, '');
   }
 
+  async uploadFile(labelId: string, filename: string, mimeType: string, fileBuffer: Buffer): Promise<string> {
+    const myEmail = await this.getMyEmail();
+    const boundary = 'gmaildb_boundary';
+    const fileBase64 = fileBuffer.toString('base64');
 
+    const raw = [
+      `From: ${myEmail}`,
+      `To: ${myEmail}`,
+      `Subject: gmaildb:file:${filename}`,
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      encrypt(JSON.stringify({ filename, mimeType, uploadedAt: new Date().toISOString() }), SECRET),
+      '',
+      `--${boundary}`,
+      `Content-Type: ${mimeType}`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${filename}"`,
+      '',
+      fileBase64,
+      '',
+      `--${boundary}--`,
+    ].join('\r\n');
 
+    const encoded = Buffer.from(raw)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
 
+    const res = await this.gmail.users.messages.insert({
+      userId: 'me',
+      requestBody: { raw: encoded, labelIds: [labelId] },
+    });
 
+    return res.data.id;
+  }
 
-  //         UPLOAD FILE CODE        //
+  async getAttachment(messageId: string): Promise<{ data: Buffer; filename: string; mimeType: string }> {
+    const msg = await this.gmail.users.messages.get({
+      userId: 'me',
+      id: messageId,
+      format: 'full',
+    });
 
+    const parts = msg.data.payload?.parts || [];
+    const attachment = parts.find((p: any) => p.filename && p.body?.attachmentId);
+    const metadata = parts.find((p: any) => p.mimeType === 'text/plain');
 
+    if (!attachment) throw new Error('No attachment found');
 
+    const attRes = await this.gmail.users.messages.attachments.get({
+      userId: 'me',
+      messageId,
+      id: attachment.body.attachmentId,
+    });
 
+    const data = Buffer.from(attRes.data.data, 'base64');
+    const rawMeta = Buffer.from(metadata?.body?.data || '', 'base64').toString('utf-8');
+      let meta: any;
+      try {
+        const decrypted = decrypt(rawMeta, SECRET);
+        meta = JSON.parse(decrypted);
+      } catch {
+        meta = JSON.parse(rawMeta);
+      }
 
-
-async uploadFile(labelId: string, filename: string, mimeType: string, fileBuffer: Buffer): Promise<string> {
-  const myEmail = await this.getMyEmail();
-  const boundary = 'gmaildb_boundary';
-
-  const fileBase64 = fileBuffer.toString('base64');
-
-  const raw = [
-    `From: ${myEmail}`,
-    `To: ${myEmail}`,
-    `Subject: gmaildb:file:${filename}`,
-    'MIME-Version: 1.0',
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
-    '',
-    `--${boundary}`,
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    JSON.stringify({ filename, mimeType, uploadedAt: new Date().toISOString() }),
-    '',
-    `--${boundary}`,
-    `Content-Type: ${mimeType}`,
-    'Content-Transfer-Encoding: base64',
-    `Content-Disposition: attachment; filename="${filename}"`,
-    '',
-    fileBase64,
-    '',
-    `--${boundary}--`,
-  ].join('\r\n');
-
-  const encoded = Buffer.from(raw)
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-
-  const res = await this.gmail.users.messages.insert({
-    userId: 'me',
-    requestBody: { raw: encoded, labelIds: [labelId] },
-  });
-  return res.data.id;
-}
-
-async getAttachment(messageId: string): Promise<{ data: Buffer; filename: string; mimeType: string }> {
-  const msg = await this.gmail.users.messages.get({
-    userId: 'me',
-    id: messageId,
-    format: 'full',
-  });
-
-  const parts = msg.data.payload?.parts || [];
-  const attachment = parts.find((p: any) => p.filename && p.body?.attachmentId);
-  const metadata = parts.find((p: any) => p.mimeType === 'text/plain');
-
-  if (!attachment) throw new Error('No attachment found');
-
-  const attRes = await this.gmail.users.messages.attachments.get({
-    userId: 'me',
-    messageId,
-    id: attachment.body.attachmentId,
-  });
-
-  const data = Buffer.from(attRes.data.data, 'base64');
-  const meta = JSON.parse(
-    Buffer.from(metadata?.body?.data || '', 'base64').toString('utf-8')
-  );
-
-  return { data, filename: meta.filename, mimeType: meta.mimeType };
-}
-
-
-
-
-
-
+    return { data, filename: meta.filename, mimeType: meta.mimeType };
+  }
 }
 
 export async function createEngine(): Promise<GmailEngine> {
@@ -246,11 +222,3 @@ export async function createEngine(): Promise<GmailEngine> {
   if (!loadSavedToken(auth)) throw new Error('Not authenticated. Run: npm run auth');
   return new GmailEngine(auth);
 }
-
-
-
-
-
-
-
-

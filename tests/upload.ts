@@ -39,7 +39,7 @@ console.log('\n📤 Uploading image...');
 const uploaded = await files.upload('test.png', buffer, 'image/png');
 console.log('✅ Uploaded:', uploaded);
 
-console.log('\n📥 Downloading image...');
-const file = await files.getFile(uploaded.id);
-fs.writeFileSync('downloaded.png', file.data);
-console.log('✅ Downloaded and saved as downloaded.png');
+// console.log('\n📥 Downloading image...');
+// const file = await files.getFile(uploaded.id);
+// fs.writeFileSync('downloaded.png', file.data);
+// console.log('✅ Downloaded and saved as downloaded.png');

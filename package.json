@@ -15,7 +15,8 @@
     "findfiles": "tsx tests/findfiles.ts",
     "deletefile": "tsx tests/deletefile.ts",
     "clearcache": "tsx tests/clearcache.ts",
-    "sync": "tsx tests/sync.ts"
+    "sync": "tsx tests/sync.ts",
+    "encryption": "tsx tests/encryption.ts"
   },
   "keywords": [],
   "author": "",

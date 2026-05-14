@@ -1,5 +1,10 @@
 import { GmailEngine } from './engine.js';
 import { cache } from './cache.js';
+import { decrypt } from './encryption.js';
+import dotenv from 'dotenv';
+dotenv.config();
+
+const SECRET = process.env.GMAILDB_SECRET || 'default_secret';
 
 export async function syncCollection(engine: GmailEngine, collection: string): Promise<void> {
   console.log(`🔄 Syncing ${collection}...`);
@@ -12,14 +17,10 @@ export async function syncCollection(engine: GmailEngine, collection: string): P
     return;
   }
 
-  // Get all IDs currently in Gmail
   const gmailIds = new Set(messages.map((m: any) => m.id));
-
-  // Get all IDs currently in cache
   const cached = cache.find(collection);
   const cachedIds = new Set(cached.map((d: any) => d.id));
 
-  // Delete from cache anything that no longer exists in Gmail
   for (const doc of cached) {
     if (!gmailIds.has(doc.id)) {
       cache.delete(doc.id);
@@ -27,13 +28,19 @@ export async function syncCollection(engine: GmailEngine, collection: string): P
     }
   }
 
-  // Add to cache anything in Gmail not yet in cache
   for (const msg of messages) {
     if (!cachedIds.has(msg.id)) {
       const full = await engine.getMessage(msg.id);
       const body = engine.parseBody(full);
       try {
-        const doc = JSON.parse(body);
+        let doc: any;
+        try {
+          const decrypted = decrypt(body, SECRET);
+          doc = JSON.parse(decrypted);
+        } catch {
+          // not encrypted — plain JSON (file metadata)
+          doc = JSON.parse(body);
+        }
         cache.set(msg.id, collection, doc);
         console.log(`➕ Added new entry to cache: ${msg.id}`);
       } catch {}

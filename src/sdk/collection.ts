@@ -32,15 +32,40 @@ export class Collection {
     return { id: docId, msgId, data: dataWithId };
   }
 
-  async find(filter?: Record<string, any>): Promise<any[]> {
+  async find(filter?: Record<string, any>,options?: { limit?: number; skip?: number; sort?: { field: string; order: 'asc' | 'desc' } }): Promise<any[]> {
     await syncCollection(this.engine, this.name);
-    return cache.find(this.name, filter);
+    let results = cache.find(this.name, filter);
+
+    // Sort
+    if (options?.sort) {
+      const { field, order } = options.sort;
+      results.sort((a, b) => {
+        if (a[field] < b[field]) return order === 'asc' ? -1 : 1;
+        if (a[field] > b[field]) return order === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+
+    // Pagination
+    const skip = options?.skip || 0;
+    const limit = options?.limit;
+
+    results = results.slice(skip);
+    if (limit) results = results.slice(0, limit);
+
+    return results;
   }
 
   async findOne(filter: Record<string, any>): Promise<any> {
     const results = await this.find(filter);
     if (!results.length) throw new NotFoundError(this.name, filter);
     return results[0];
+  }
+
+
+  async count(filter?: Record<string, any>): Promise<number> {
+    await syncCollection(this.engine, this.name);
+    return cache.find(this.name, filter).length;
   }
 
   async update(filter: Record<string, any>, changes: Record<string, any>): Promise<number> {
@@ -131,6 +156,26 @@ export class Collection {
   }
 
   private matches(doc: any, filter: Record<string, any>): boolean {
-    return Object.entries(filter).every(([k, v]) => doc[k] === v);
-  }
+  return Object.entries(filter).every(([key, value]) => {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Query operators
+      return Object.entries(value).every(([op, operand]) => {
+        switch (op) {
+          case '$gt':  return doc[key] > (operand as any);
+          case '$gte': return doc[key] >= (operand as any);
+          case '$lt':  return doc[key] < (operand as any);
+          case '$lte': return doc[key] <= (operand as any);
+          case '$ne':  return doc[key] !== (operand as any);
+          case '$in':  return (operand as any[]).includes(doc[key]);
+          case '$nin': return !(operand as any[]).includes(doc[key]);
+          case '$contains': return String(doc[key]).toLowerCase().includes(String(operand as any).toLowerCase());
+          case '$exists': return (operand as any) ? key in doc : !(key in doc);
+          default: return false;
+        }
+      });
+    }
+    // Exact match
+    return doc[key] === value;
+  });
+}
 }

@@ -93,12 +93,12 @@ export class GmailEngine {
     });
   }
 
-  async listMessages(labelId: string): Promise<any[]> {
+  async listMessages(labelId: string, maxResults: number = 100): Promise<any[]> {
     return this.throttle(async () => {
       const res = await this.gmail.users.messages.list({
         userId: 'me',
         labelIds: [labelId],
-        maxResults: 100,
+        maxResults,
       });
       return res.data.messages || [];
     });

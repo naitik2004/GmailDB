@@ -1,11 +1,11 @@
 import { google } from 'googleapis';
 import { createOAuthClient, loadSavedToken } from '../auth/oauth.js';
-import dotenv from 'dotenv';
 import { encrypt, decrypt } from './encryption.js';
+import { RateLimitError } from './errors.js';
+import dotenv from 'dotenv';
 dotenv.config();
 
 const SECRET = process.env.GMAILDB_SECRET || 'default_secret';
-
 
 export class GmailEngine {
   private gmail: any;
@@ -31,7 +31,14 @@ export class GmailEngine {
       if (timeSinceLast < this.MIN_DELAY) {
         await new Promise(r => setTimeout(r, this.MIN_DELAY - timeSinceLast));
       }
-      await request();
+      try {
+        await request();
+      } catch (err: any) {
+        if (err?.status === 429 || err?.code === 429) {
+          throw new RateLimitError();
+        }
+        throw err;
+      }
       this.lastRequestTime = Date.now();
     }
     this.processing = false;
@@ -47,7 +54,6 @@ export class GmailEngine {
     });
   }
 
-  // No throttle — cached after first call
   async getMyEmail(): Promise<string> {
     if (this.myEmail) return this.myEmail;
     const res = await this.gmail.users.getProfile({ userId: 'me' });
@@ -55,7 +61,6 @@ export class GmailEngine {
     return this.myEmail!;
   }
 
-  // No throttle — cached after first call
   async ensureLabel(name: string): Promise<string> {
     if (this.labelCache.has(name)) return this.labelCache.get(name)!;
     const res = await this.gmail.users.labels.list({ userId: 'me' });
@@ -66,7 +71,11 @@ export class GmailEngine {
     }
     const created = await this.gmail.users.labels.create({
       userId: 'me',
-      requestBody: { name, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
+      requestBody: {
+        name,
+        labelListVisibility: 'labelShow',
+        messageListVisibility: 'show',
+      },
     });
     this.labelCache.set(name, created.data.id);
     return created.data.id;
@@ -143,10 +152,19 @@ export class GmailEngine {
       .replace(/=+$/, '');
   }
 
-  async uploadFile(labelId: string, filename: string, mimeType: string, fileBuffer: Buffer): Promise<string> {
+  async uploadFile(
+    labelId: string,
+    filename: string,
+    mimeType: string,
+    fileBuffer: Buffer
+  ): Promise<string> {
     const myEmail = await this.getMyEmail();
     const boundary = 'gmaildb_boundary';
     const fileBase64 = fileBuffer.toString('base64');
+    const encryptedMeta = encrypt(
+      JSON.stringify({ filename, mimeType, uploadedAt: new Date().toISOString() }),
+      SECRET
+    );
 
     const raw = [
       `From: ${myEmail}`,
@@ -158,7 +176,7 @@ export class GmailEngine {
       `--${boundary}`,
       'Content-Type: text/plain; charset=utf-8',
       '',
-      encrypt(JSON.stringify({ filename, mimeType, uploadedAt: new Date().toISOString() }), SECRET),
+      encryptedMeta,
       '',
       `--${boundary}`,
       `Content-Type: ${mimeType}`,
@@ -180,7 +198,6 @@ export class GmailEngine {
       userId: 'me',
       requestBody: { raw: encoded, labelIds: [labelId] },
     });
-
     return res.data.id;
   }
 
@@ -205,13 +222,14 @@ export class GmailEngine {
 
     const data = Buffer.from(attRes.data.data, 'base64');
     const rawMeta = Buffer.from(metadata?.body?.data || '', 'base64').toString('utf-8');
-      let meta: any;
-      try {
-        const decrypted = decrypt(rawMeta, SECRET);
-        meta = JSON.parse(decrypted);
-      } catch {
-        meta = JSON.parse(rawMeta);
-      }
+
+    let meta: any;
+    try {
+      const decrypted = decrypt(rawMeta, SECRET);
+      meta = JSON.parse(decrypted);
+    } catch {
+      meta = JSON.parse(rawMeta);
+    }
 
     return { data, filename: meta.filename, mimeType: meta.mimeType };
   }

@@ -3,6 +3,7 @@ import { cache } from '../core/cache.js';
 import { randomUUID } from 'crypto';
 import { syncCollection } from '../core/sync.js';
 import { encrypt, decrypt } from '../core/encryption.js';
+import { ValidationError, FileSizeError, NotFoundError } from '../core/errors.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -15,6 +16,13 @@ export class Collection {
   ) {}
 
   async insert(data: Record<string, any>): Promise<{ id: string; msgId: string; data: Record<string, any> }> {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new ValidationError('insert() requires a plain object.');
+    }
+    if (Object.keys(data).length === 0) {
+      throw new ValidationError('Cannot insert an empty object.');
+    }
+
     const docId = randomUUID();
     const dataWithId = { ...data, _id: docId };
     const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
@@ -29,12 +37,20 @@ export class Collection {
     return cache.find(this.name, filter);
   }
 
-  async findOne(filter: Record<string, any>): Promise<any | null> {
+  async findOne(filter: Record<string, any>): Promise<any> {
     const results = await this.find(filter);
-    return results[0] || null;
+    if (!results.length) throw new NotFoundError(this.name, filter);
+    return results[0];
   }
 
   async update(filter: Record<string, any>, changes: Record<string, any>): Promise<number> {
+    if (!filter || Object.keys(filter).length === 0) {
+      throw new ValidationError('update() requires a filter object.');
+    }
+    if (!changes || Object.keys(changes).length === 0) {
+      throw new ValidationError('update() requires a changes object.');
+    }
+
     await syncCollection(this.engine, this.name);
     const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
     const messages = await this.engine.listMessages(labelId);
@@ -89,9 +105,19 @@ export class Collection {
         }
       } catch {}
     }
+
+    throw new NotFoundError(this.name, query);
   }
 
   async upload(filename: string, fileBuffer: Buffer, mimeType: string): Promise<{ id: string; filename: string }> {
+    if (!filename || !mimeType) {
+      throw new ValidationError('upload() requires filename and mimeType.');
+    }
+    const MAX_SIZE = 25 * 1024 * 1024;
+    if (fileBuffer.length > MAX_SIZE) {
+      throw new FileSizeError(filename, fileBuffer.length / (1024 * 1024));
+    }
+
     const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
     const id = await this.engine.uploadFile(labelId, filename, mimeType, fileBuffer);
     const metadata = { filename, mimeType, uploadedAt: new Date().toISOString() };
@@ -100,6 +126,7 @@ export class Collection {
   }
 
   async getFile(messageId: string): Promise<{ data: Buffer; filename: string; mimeType: string }> {
+    if (!messageId) throw new ValidationError('getFile() requires a messageId.');
     return this.engine.getAttachment(messageId);
   }
 

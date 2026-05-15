@@ -1,8 +1,6 @@
 # GmailDB
 
-> Use Gmail as a backend database engine.
-
-GmailDB is an open-source SDK that turns your Gmail account into a lightweight backend database. No servers, no setup, no cost — just your Gmail account.
+> One SDK for your entire backend. Store JSON data, upload images, PDFs and files — all inside your Gmail account. Zero Cost, No Supabase, no MongoDB, no Firebase, no Cloudinary, no AWS S3. Just `npm install gmaildb` and you're done.
 
 ## Why GmailDB?
 

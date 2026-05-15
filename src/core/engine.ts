@@ -1,7 +1,7 @@
 import { google } from 'googleapis';
 import { createOAuthClient, loadSavedToken } from '../auth/oauth.js';
 import { encrypt, decrypt } from './encryption.js';
-import { RateLimitError } from './errors.js';
+import { RateLimitError, TokenExpiredError, StorageFullError, NetworkError } from './errors.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -21,6 +21,8 @@ export class GmailEngine {
     this.gmail = google.gmail({ version: 'v1', auth });
   }
 
+
+
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     this.processing = true;
@@ -37,12 +39,23 @@ export class GmailEngine {
         if (err?.status === 429 || err?.code === 429) {
           throw new RateLimitError();
         }
+        if (err?.status === 401 || err?.code === 401) {
+          throw new TokenExpiredError();
+        }
+        if (err?.status === 507) {
+          throw new StorageFullError();
+        }
+        if (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED') {
+          throw new NetworkError();
+        }
         throw err;
       }
       this.lastRequestTime = Date.now();
     }
     this.processing = false;
   }
+
+
 
   private throttle<T>(fn: () => Promise<T>): Promise<T> {
     return new Promise((resolve, reject) => {

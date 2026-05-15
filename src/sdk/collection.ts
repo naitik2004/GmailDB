@@ -13,7 +13,7 @@ export class Collection {
   constructor(
     private name: string,
     private engine: GmailEngine
-  ) {}
+  ) { }
 
   async insert(data: Record<string, any>): Promise<{ id: string; msgId: string; data: Record<string, any> }> {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
@@ -32,7 +32,7 @@ export class Collection {
     return { id: docId, msgId, data: dataWithId };
   }
 
-  async find(filter?: Record<string, any>,options?: { limit?: number; skip?: number; sort?: { field: string; order: 'asc' | 'desc' } }): Promise<any[]> {
+  async find(filter?: Record<string, any>, options?: { limit?: number; skip?: number; sort?: { field: string; order: 'asc' | 'desc' } }): Promise<any[]> {
     await syncCollection(this.engine, this.name);
     let results = cache.find(this.name, filter);
 
@@ -101,7 +101,7 @@ export class Collection {
           cache.set(newId, this.name, newDoc);
           updated++;
         }
-      } catch {}
+      } catch { }
     }
     return updated;
   }
@@ -128,7 +128,7 @@ export class Collection {
           cache.delete(msg.id);
           return;
         }
-      } catch {}
+      } catch { }
     }
 
     throw new NotFoundError(this.name, query);
@@ -156,26 +156,99 @@ export class Collection {
   }
 
   private matches(doc: any, filter: Record<string, any>): boolean {
-  return Object.entries(filter).every(([key, value]) => {
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      // Query operators
-      return Object.entries(value).every(([op, operand]) => {
-        switch (op) {
-          case '$gt':  return doc[key] > (operand as any);
-          case '$gte': return doc[key] >= (operand as any);
-          case '$lt':  return doc[key] < (operand as any);
-          case '$lte': return doc[key] <= (operand as any);
-          case '$ne':  return doc[key] !== (operand as any);
-          case '$in':  return (operand as any[]).includes(doc[key]);
-          case '$nin': return !(operand as any[]).includes(doc[key]);
-          case '$contains': return String(doc[key]).toLowerCase().includes(String(operand as any).toLowerCase());
-          case '$exists': return (operand as any) ? key in doc : !(key in doc);
-          default: return false;
-        }
-      });
+    return Object.entries(filter).every(([key, value]) => {
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        // Query operators
+        return Object.entries(value).every(([op, operand]) => {
+          switch (op) {
+            case '$gt': return doc[key] > (operand as any);
+            case '$gte': return doc[key] >= (operand as any);
+            case '$lt': return doc[key] < (operand as any);
+            case '$lte': return doc[key] <= (operand as any);
+            case '$ne': return doc[key] !== (operand as any);
+            case '$in': return (operand as any[]).includes(doc[key]);
+            case '$nin': return !(operand as any[]).includes(doc[key]);
+            case '$contains': return String(doc[key]).toLowerCase().includes(String(operand as any).toLowerCase());
+            case '$exists': return (operand as any) ? key in doc : !(key in doc);
+            default: return false;
+          }
+        });
+      }
+      // Exact match
+      return doc[key] === value;
+    });
+  }
+
+
+
+  //-------------------------batch operations--------------------------------//
+  async insertMany(docs: Record<string, any>[]): Promise<{ inserted: number; ids: string[] }> {
+    if (!Array.isArray(docs) || docs.length === 0) {
+      throw new ValidationError('insertMany() requires a non-empty array.');
     }
-    // Exact match
-    return doc[key] === value;
-  });
-}
+    const ids: string[] = [];
+    for (const doc of docs) {
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+        throw new ValidationError('Each item in insertMany() must be a plain object.');
+      }
+      if (Object.keys(doc).length === 0) {
+        throw new ValidationError('Cannot insert an empty object.');
+      }
+      const result = await this.insert(doc);
+      ids.push(result.id);
+    }
+    return { inserted: docs.length, ids };
+  }
+
+  async deleteMany(filter: Record<string, any>): Promise<{ deleted: number }> {
+    if (!filter || Object.keys(filter).length === 0) {
+      throw new ValidationError('deleteMany() requires a filter. To delete all use: deleteAll()');
+    }
+
+    await syncCollection(this.engine, this.name);
+    const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
+    const messages = await this.engine.listMessages(labelId);
+    let deleted = 0;
+
+    for (const msg of messages) {
+      const full = await this.engine.getMessage(msg.id);
+      const body = this.engine.parseBody(full);
+      try {
+        let doc: any;
+        try {
+          const decrypted = decrypt(body, SECRET);
+          doc = JSON.parse(decrypted);
+        } catch {
+          doc = JSON.parse(body);
+        }
+        if (this.matches(doc, filter)) {
+          await this.engine.trashMessage(msg.id);
+          cache.delete(msg.id);
+          deleted++;
+        }
+      } catch { }
+    }
+    return { deleted };
+  }
+
+  async deleteAll(): Promise<{ deleted: number }> {
+    await syncCollection(this.engine, this.name);
+    const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
+    const messages = await this.engine.listMessages(labelId);
+    let deleted = 0;
+
+    for (const msg of messages) {
+      await this.engine.trashMessage(msg.id);
+      cache.delete(msg.id);
+      deleted++;
+    }
+
+    return { deleted };
+  }
+
+
+  //--------------------------------------------------------------//
+  
+
+
 }

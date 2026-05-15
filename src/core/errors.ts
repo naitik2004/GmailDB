@@ -39,3 +39,47 @@ export class FileSizeError extends GmailDBError {
     this.name = 'FileSizeError';
   }
 }
+
+
+
+
+
+// ----------// 
+
+
+
+
+export class NetworkError extends GmailDBError {
+  constructor(message = 'Network request failed. Check your internet connection.') {
+    super(message, 'NETWORK_ERROR');
+    this.name = 'NetworkError';
+  }
+}
+
+export class TokenExpiredError extends GmailDBError {
+  constructor() {
+    super('OAuth token expired. Run: npm run auth to re-authenticate.', 'TOKEN_EXPIRED');
+    this.name = 'TokenExpiredError';
+  }
+}
+
+export class StorageFullError extends GmailDBError {
+  constructor() {
+    super('Gmail storage is full. Please free up space in your Gmail account.', 'STORAGE_FULL');
+    this.name = 'StorageFullError';
+  }
+}
+
+export class InvalidCollectionError extends GmailDBError {
+  constructor(name: string) {
+    super(`Invalid collection name "${name}". Must be a non-empty string with no special characters.`, 'INVALID_COLLECTION');
+    this.name = 'InvalidCollectionError';
+  }
+}
+
+export class CacheError extends GmailDBError {
+  constructor(message = 'Local cache error. Try clearing the cache.') {
+    super(message, 'CACHE_ERROR');
+    this.name = 'CacheError';
+  }
+}

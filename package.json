@@ -18,7 +18,8 @@
     "deletefile": "tsx tests/deletefile.ts",
     "clearcache": "tsx tests/clearcache.ts",
     "sync": "tsx tests/sync.ts",
-    "encryption": "tsx tests/encryption.ts"
+    "encryption": "tsx tests/encryption.ts",
+    "batch": "tsx tests/batch.ts"
   },
   "keywords": [
     "gmail",

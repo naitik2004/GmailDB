@@ -17,16 +17,28 @@ class Cache {
         id TEXT PRIMARY KEY,
         collection TEXT NOT NULL,
         data TEXT NOT NULL,
-        created_at INTEGER DEFAULT (strftime('%s', 'now'))
+        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+        expires_at INTEGER DEFAULT NULL
       );
     `);
+
+    // Migration — add expires_at if it doesn't exist yet
+    try {
+      this.db.exec(`ALTER TABLE records ADD COLUMN expires_at INTEGER DEFAULT NULL`);
+    } catch {
+      // Column already exists — ignore
+    }
   }
 
-  set(id: string, collection: string, data: Record<string, any>) {
+  set(id: string, collection: string, data: Record<string, any>, ttlDays?: number) {
+    const expiresAt = ttlDays
+      ? Math.floor(Date.now() / 1000) + ttlDays * 86400
+      : null;
+
     this.db.prepare(`
-      INSERT OR REPLACE INTO records (id, collection, data)
-      VALUES (?, ?, ?)
-    `).run(id, collection, JSON.stringify(data));
+      INSERT OR REPLACE INTO records (id, collection, data, expires_at)
+      VALUES (?, ?, ?, ?)
+    `).run(id, collection, JSON.stringify(data), expiresAt);
   }
 
   get(id: string): Record<string, any> | null {
@@ -38,14 +50,15 @@ class Cache {
 
   //find //
   find(collection: string, filter?: Record<string, any>): any[] {
+    const now = Math.floor(Date.now() / 1000);
     const rows = this.db.prepare(`
-      SELECT * FROM records WHERE collection = ?
-    `).all(collection) as any[];
+      SELECT * FROM records 
+      WHERE collection = ? 
+      AND (expires_at IS NULL OR expires_at > ?)
+    `).all(collection, now) as any[];
 
     const docs = rows.map(row => ({ id: row.id, ...JSON.parse(row.data) }));
-    
     if (!filter || Object.keys(filter).length === 0) return docs;
-    
     return docs.filter(doc => this.matches(doc, filter));
   }
 
@@ -54,12 +67,12 @@ class Cache {
       if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
         return Object.entries(value).every(([op, operand]) => {
           switch (op) {
-            case '$gt':  return doc[key] > (operand as any);
+            case '$gt': return doc[key] > (operand as any);
             case '$gte': return doc[key] >= (operand as any);
-            case '$lt':  return doc[key] < (operand as any);
+            case '$lt': return doc[key] < (operand as any);
             case '$lte': return doc[key] <= (operand as any);
-            case '$ne':  return doc[key] !== (operand as any);
-            case '$in':  return (operand as any[]).includes(doc[key]);
+            case '$ne': return doc[key] !== (operand as any);
+            case '$in': return (operand as any[]).includes(doc[key]);
             case '$nin': return !(operand as any[]).includes(doc[key]);
             case '$contains': return String(doc[key]).toLowerCase().includes(String(operand as any).toLowerCase());
             case '$exists': return (operand as any) ? key in doc : !(key in doc);
@@ -70,7 +83,7 @@ class Cache {
       return doc[key] === value;
     });
   }
-//---------------------
+  //---------------------
   delete(id: string) {
     this.db.prepare(`DELETE FROM records WHERE id = ?`).run(id);
   }
@@ -85,6 +98,22 @@ class Cache {
     `).get(collection) as any;
     return row.count > 0;
   }
+
+
+  // TTL------------------
+
+  purgeExpired(): number {
+    const now = Math.floor(Date.now() / 1000);
+    const result = this.db.prepare(`
+      DELETE FROM records WHERE expires_at IS NOT NULL AND expires_at <= ?
+    `).run(now);
+    return result.changes;
+  }
+
+  //------------also inti and update some of teh insert adn some other codes 
+
+
+
 }
 
 export const cache = new Cache();

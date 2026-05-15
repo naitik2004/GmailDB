@@ -15,7 +15,7 @@ export class Collection {
     private engine: GmailEngine
   ) { }
 
-  async insert(data: Record<string, any>): Promise<{ id: string; msgId: string; data: Record<string, any> }> {
+  async insert(data: Record<string, any>,options?: { ttl?: number }): Promise<{ id: string; msgId: string; data: Record<string, any> }> {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       throw new ValidationError('insert() requires a plain object.');
     }
@@ -24,11 +24,15 @@ export class Collection {
     }
 
     const docId = randomUUID();
-    const dataWithId = { ...data, _id: docId };
+    const dataWithId = { 
+      ...data, 
+      _id: docId,
+      ...(options?.ttl ? { _ttl: options.ttl, _expiresAt: new Date(Date.now() + options.ttl * 86400000).toISOString() } : {})
+    };
     const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
     const encrypted = encrypt(JSON.stringify(dataWithId), SECRET);
     const msgId = await this.engine.insertMessage(labelId, `gmaildb:${this.name}`, encrypted);
-    cache.set(msgId, this.name, dataWithId);
+    cache.set(msgId, this.name, dataWithId, options?.ttl);
     return { id: docId, msgId, data: dataWithId };
   }
 
@@ -249,6 +253,8 @@ export class Collection {
 
   //--------------------------------------------------------------//
   
-
+  purgeExpired(): number {
+    return cache.purgeExpired();
+  }
 
 }

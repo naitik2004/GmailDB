@@ -1,15 +1,21 @@
 # GmailDB
 
-> One SDK for your entire backend. Store JSON data, upload images, PDFs and files — all inside your Gmail account. Zero Cost, No Supabase, no MongoDB, no Firebase, no Cloudinary, no AWS S3. Just `npm install gmaildb` and you're done.
+> One SDK for your entire backend. Store JSON data, upload images, PDFs and files — all inside your Gmail account. Zero cost, no Supabase, no Cloudinary, no AWS S3. Just `npm install gmaildb` and you're done.
+
+---
 
 ## Why GmailDB?
 
 Developers today install multiple services for a single app:
+
 - Supabase or MongoDB for database
 - Cloudinary for image storage
 - AWS S3 for file storage
+- SendGrid for emails
 
 **GmailDB replaces all of it with one SDK and one Gmail account.**
+
+---
 
 ## How it works
 
@@ -20,13 +26,64 @@ Developers today install multiple services for a single app:
 | Email Body | Encrypted JSON Data |
 | Attachment | File Storage |
 
+---
+
 ## Installation
 
 ```bash
 npm install gmaildb
 ```
 
-## Quick Start
+---
+
+## Setup
+
+### 1. Google Cloud Console
+
+- Go to `console.cloud.google.com`
+- Create a new project — name it anything
+- Go to **APIs & Services → Library**
+- Search **Gmail API**
+- Enable it
+- Go to **APIs & Services → Credentials**
+- Create **OAuth 2.0 Client ID**
+- Application type: **Web application**
+- Add redirect URI:
+
+```txt
+http://localhost:3000/oauth/callback
+```
+
+- Copy your **Client ID** and **Client Secret**
+
+---
+
+### 2. Environment Variables
+
+Create a `.env` file in your project root:
+
+```env
+GOOGLE_CLIENT_ID=your_client_id
+GOOGLE_CLIENT_SECRET=your_client_secret
+GOOGLE_REDIRECT_URI=http://localhost:3000/oauth/callback
+GMAILDB_SECRET=your_long_random_secret_key
+```
+
+---
+
+### 3. Authenticate
+
+```bash
+npm run auth
+```
+
+Open the URL in your browser, sign in with Google, done.
+
+A `token.json` file will be saved automatically.
+
+---
+
+# Quick Start
 
 ```typescript
 import { GmailDB } from 'gmaildb';
@@ -84,24 +141,58 @@ await users.deleteMany({ role: 'user' });
 await users.deleteAll();
 ```
 
-## File Storage
+---
+
+# TTL — Auto Expire Records
+
+```typescript
+// Record auto-deletes after 1 day
+await sessions.insert(
+  { token: 'abc123', userId: 'user_1' },
+  { ttl: 1 }
+);
+
+// Record auto-deletes after 7 days
+await posts.insert(
+  { title: 'Draft Post' },
+  { ttl: 7 }
+);
+
+// Manually purge all expired records
+sessions.purgeExpired();
+```
+
+---
+
+# File Storage
 
 ```typescript
 import * as fs from 'fs';
 
 const files = db.collection('files');
 
-// Upload
+// Upload any file
 const buffer = fs.readFileSync('photo.png');
 const uploaded = await files.upload('photo.png', buffer, 'image/png');
-console.log(uploaded.id);
+
+console.log(uploaded.id); // save this ID to retrieve later
 
 // Download
 const file = await files.getFile(uploaded.id);
+
 fs.writeFileSync('downloaded.png', file.data);
+
+// Store file reference inside a record
+await notes.insert({
+  title: 'My Note',
+  content: 'Note content here',
+  imageId: uploaded.id,
+});
 ```
 
-## Query Operators
+---
+
+# Query Operators
 
 | Operator | Description | Example |
 |----------|-------------|---------|
@@ -115,7 +206,9 @@ fs.writeFileSync('downloaded.png', file.data);
 | `$contains` | String contains | `{ name: { $contains: 'ary' } }` |
 | `$exists` | Field exists | `{ phone: { $exists: true } }` |
 
-## Error Handling
+---
+
+# Error Handling
 
 ```typescript
 import {
@@ -135,79 +228,86 @@ try {
   if (err instanceof ValidationError) {
     console.log('Bad data:', err.message);
   }
+
   if (err instanceof NotFoundError) {
     console.log('Not found:', err.message);
   }
+
   if (err instanceof RateLimitError) {
     console.log('Slow down:', err.message);
   }
+
   if (err instanceof TokenExpiredError) {
     console.log('Re-authenticate:', err.message);
+  }
+
+  if (err instanceof NetworkError) {
+    console.log('Check internet connection:', err.message);
+  }
+
+  if (err instanceof FileSizeError) {
+    console.log('File too large:', err.message);
   }
 }
 ```
 
-## Setup
+---
 
-### 1. Google Cloud Console
-- Create a new project
-- Enable Gmail API
-- Create OAuth 2.0 credentials (Web application)
-- Add redirect URI: `http://localhost:3000/oauth/callback`
+# Features
 
-### 2. Environment Variables
-Create a `.env` file:
-```
-GOOGLE_CLIENT_ID=your_client_id
-GOOGLE_CLIENT_SECRET=your_client_secret
-GOOGLE_REDIRECT_URI=http://localhost:3000/oauth/callback
-GMAILDB_SECRET=your_long_secret_key_for_encryption
-```
-
-### 3. Authenticate
-```bash
-npm run auth
-```
-
-## Features
 - ✅ Full CRUD — insert, insertMany, find, findOne, update, delete, deleteMany, deleteAll
-- ✅ File upload and download (images, PDFs, any file under 25MB)
+- ✅ File upload and download — images, PDFs, any file under 25MB
 - ✅ AES-256 encryption — data encrypted before storing in Gmail
+- ✅ TTL — auto expire records after X days
 - ✅ SQLite local caching for fast reads
 - ✅ Auto sync between Gmail and cache
 - ✅ Rate limit handler with request queue
+- ✅ Network retry with exponential backoff
+- ✅ Token auto-refresh
 - ✅ Pagination and sorting
-- ✅ Query operators ($gt, $gte, $lt, $lte, $ne, $in, $nin, $contains, $exists)
-- ✅ Batch operations (insertMany, deleteMany, deleteAll)
+- ✅ Query operators (`$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$in`, `$nin`, `$contains`, `$exists`)
+- ✅ Batch operations — `insertMany`, `deleteMany`, `deleteAll`
 - ✅ UUID-based record IDs
 - ✅ TypeScript support
-- ✅ Proper error classes
+- ✅ Full error classes with error codes
+- ✅ 17 unit and integration tests
 
-## Limitations
+---
+
+# Limitations
+
 - 25MB max file size (Gmail limit)
 - Not suitable for high-traffic production apps
 - Rate limited by Gmail API quotas
 - No real-time updates (polling only)
 
-## Roadmap
+---
+
+# Roadmap
+
 - [x] Full CRUD operations
 - [x] File upload and download
 - [x] AES-256 encryption
+- [x] TTL support
 - [x] SQLite caching
 - [x] Auto sync
 - [x] Rate limit handler
+- [x] Network retry
+- [x] Token auto-refresh
 - [x] Pagination and sorting
 - [x] Query operators
 - [x] Batch operations
 - [x] Error handling
-- [ ] TTL (auto-delete after X days)
-- [ ] Unit tests
-- [ ] Setup CLI (npx gmaildb init)
+- [x] Unit and integration tests
+- [ ] Setup CLI (`npx gmaildb init`)
 - [ ] Binary file encryption
 - [ ] Multi-user OAuth
 - [ ] VS Code extension
 - [ ] Demo website
 - [ ] AI natural language queries
 
-## License
+---
+
+# License
+
 MIT

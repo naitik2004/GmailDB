@@ -1,5 +1,5 @@
 import { google } from 'googleapis';
-import { createOAuthClient, loadSavedToken } from '../auth/oauth.js';
+import { createOAuthClient, loadSavedToken, refreshTokenIfNeeded } from '../auth/oauth.js';
 import { encrypt, decrypt } from './encryption.js';
 import { RateLimitError, TokenExpiredError, StorageFullError, NetworkError } from './errors.js';
 import dotenv from 'dotenv';
@@ -26,6 +26,7 @@ export class GmailEngine {
   private async processQueue(): Promise<void> {
     if (this.processing) return;
     this.processing = true;
+
     while (this.requestQueue.length > 0) {
       const request = this.requestQueue.shift()!;
       const now = Date.now();
@@ -33,25 +34,44 @@ export class GmailEngine {
       if (timeSinceLast < this.MIN_DELAY) {
         await new Promise(r => setTimeout(r, this.MIN_DELAY - timeSinceLast));
       }
-      try {
-        await request();
-      } catch (err: any) {
-        if (err?.status === 429 || err?.code === 429) {
-          throw new RateLimitError();
+
+      let attempt = 0;
+      const maxAttempts = 3;
+
+      while (attempt < maxAttempts) {
+        try {
+          await request();
+          break;
+        } catch (err: any) {
+          attempt++;
+
+          if (err?.status === 429 || err?.code === 429) {
+            throw new RateLimitError();
+          }
+          if (err?.status === 401 || err?.code === 401) {
+            throw new TokenExpiredError();
+          }
+          if (err?.status === 507) {
+            throw new StorageFullError();
+          }
+
+          const isNetworkError = err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED' || err?.code === 'ETIMEDOUT';
+
+          if (isNetworkError && attempt < maxAttempts) {
+            const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+            console.log(`🔄 Network error, retrying in ${delay/1000}s... (attempt ${attempt}/${maxAttempts})`);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+
+          if (isNetworkError) throw new NetworkError();
+          throw err;
         }
-        if (err?.status === 401 || err?.code === 401) {
-          throw new TokenExpiredError();
-        }
-        if (err?.status === 507) {
-          throw new StorageFullError();
-        }
-        if (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED') {
-          throw new NetworkError();
-        }
-        throw err;
       }
+
       this.lastRequestTime = Date.now();
     }
+
     this.processing = false;
   }
 
@@ -251,5 +271,6 @@ export class GmailEngine {
 export async function createEngine(): Promise<GmailEngine> {
   const auth = createOAuthClient();
   if (!loadSavedToken(auth)) throw new Error('Not authenticated. Run: npm run auth');
+  await refreshTokenIfNeeded(auth);
   return new GmailEngine(auth);
 }

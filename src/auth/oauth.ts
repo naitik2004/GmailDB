@@ -55,3 +55,20 @@ export async function authenticate(): Promise<any> {
     server.listen(3000);
   });
 }
+
+
+export async function refreshTokenIfNeeded(client: any): Promise<void> {
+  const credentials = client.credentials;
+  if (!credentials.expiry_date) return;
+
+  const expiresIn = credentials.expiry_date - Date.now();
+  const fiveMinutes = 5 * 60 * 1000;
+
+  if (expiresIn < fiveMinutes) {
+    console.log('🔄 Token expiring soon, refreshing...');
+    const { credentials: newCreds } = await client.refreshAccessToken();
+    client.setCredentials(newCreds);
+    fs.writeFileSync(TOKEN_PATH, JSON.stringify(newCreds));
+    console.log('✅ Token refreshed');
+  }
+}

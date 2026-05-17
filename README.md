@@ -260,6 +260,7 @@ try {
 - ✅ AES-256 encryption — data encrypted before storing in Gmail
 - ✅ TTL — auto expire records after X days
 - ✅ SQLite local caching for fast reads
+- ✅ SQLite index — O(1) lookup by _id for instant updates and deletes at any scale
 - ✅ Auto sync between Gmail and cache
 - ✅ Rate limit handler with request queue
 - ✅ Network retry with exponential backoff
@@ -289,6 +290,7 @@ try {
 - [x] File upload and download
 - [x] AES-256 encryption
 - [x] TTL support
+- [x] SQLite index for O(1) _id lookups
 - [x] SQLite caching
 - [x] Auto sync
 - [x] Rate limit handler

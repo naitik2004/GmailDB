@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3';
-import * as fs from 'fs';
 
 const DB_PATH = 'gmaildb.sqlite';
 
@@ -20,14 +19,22 @@ class Cache {
         created_at INTEGER DEFAULT (strftime('%s', 'now')),
         expires_at INTEGER DEFAULT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS index_map (
+        doc_id TEXT PRIMARY KEY,
+        msg_id TEXT NOT NULL,
+        collection TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collection ON records(collection);
+      CREATE INDEX IF NOT EXISTS idx_doc_id ON index_map(doc_id);
+      CREATE INDEX IF NOT EXISTS idx_msg_id ON index_map(msg_id);
     `);
 
-    // Migration — add expires_at if it doesn't exist yet
+    // Migrations
     try {
       this.db.exec(`ALTER TABLE records ADD COLUMN expires_at INTEGER DEFAULT NULL`);
-    } catch {
-      // Column already exists — ignore
-    }
+    } catch {}
   }
 
   set(id: string, collection: string, data: Record<string, any>, ttlDays?: number) {
@@ -39,6 +46,33 @@ class Cache {
       INSERT OR REPLACE INTO records (id, collection, data, expires_at)
       VALUES (?, ?, ?, ?)
     `).run(id, collection, JSON.stringify(data), expiresAt);
+
+    // If record has _id, store in index
+    if (data._id) {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO index_map (doc_id, msg_id, collection)
+        VALUES (?, ?, ?)
+      `).run(data._id, id, collection);
+    }
+  }
+
+  // Get msgId directly from _id — O(1) lookup
+  getMsgIdByDocId(docId: string): string | null {
+    const row = this.db.prepare(`
+      SELECT msg_id FROM index_map WHERE doc_id = ?
+    `).get(docId) as any;
+    return row?.msg_id || null;
+  }
+
+  // Get record directly by _id — O(1) lookup
+  getByDocId(docId: string): any | null {
+    const row = this.db.prepare(`
+      SELECT r.* FROM records r
+      JOIN index_map i ON r.id = i.msg_id
+      WHERE i.doc_id = ?
+    `).get(docId) as any;
+    if (!row) return null;
+    return { id: row.id, ...JSON.parse(row.data) };
   }
 
   get(id: string): Record<string, any> | null {
@@ -47,13 +81,11 @@ class Cache {
     return { id: row.id, ...JSON.parse(row.data) };
   }
 
-
-  //find //
   find(collection: string, filter?: Record<string, any>): any[] {
     const now = Math.floor(Date.now() / 1000);
     const rows = this.db.prepare(`
-      SELECT * FROM records 
-      WHERE collection = ? 
+      SELECT * FROM records
+      WHERE collection = ?
       AND (expires_at IS NULL OR expires_at > ?)
     `).all(collection, now) as any[];
 
@@ -62,33 +94,28 @@ class Cache {
     return docs.filter(doc => this.matches(doc, filter));
   }
 
-  private matches(doc: any, filter: Record<string, any>): boolean {
-    return Object.entries(filter).every(([key, value]) => {
-      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        return Object.entries(value).every(([op, operand]) => {
-          switch (op) {
-            case '$gt': return doc[key] > (operand as any);
-            case '$gte': return doc[key] >= (operand as any);
-            case '$lt': return doc[key] < (operand as any);
-            case '$lte': return doc[key] <= (operand as any);
-            case '$ne': return doc[key] !== (operand as any);
-            case '$in': return (operand as any[]).includes(doc[key]);
-            case '$nin': return !(operand as any[]).includes(doc[key]);
-            case '$contains': return String(doc[key]).toLowerCase().includes(String(operand as any).toLowerCase());
-            case '$exists': return (operand as any) ? key in doc : !(key in doc);
-            default: return false;
-          }
-        });
-      }
-      return doc[key] === value;
-    });
-  }
-  //---------------------
   delete(id: string) {
     this.db.prepare(`DELETE FROM records WHERE id = ?`).run(id);
+    this.db.prepare(`DELETE FROM index_map WHERE msg_id = ?`).run(id);
+  }
+
+  deleteByDocId(docId: string) {
+    const row = this.db.prepare(`
+      SELECT msg_id FROM index_map WHERE doc_id = ?
+    `).get(docId) as any;
+    if (row) {
+      this.db.prepare(`DELETE FROM records WHERE id = ?`).run(row.msg_id);
+      this.db.prepare(`DELETE FROM index_map WHERE doc_id = ?`).run(docId);
+    }
   }
 
   clear(collection: string) {
+    const rows = this.db.prepare(`
+      SELECT id FROM records WHERE collection = ?
+    `).all(collection) as any[];
+    for (const row of rows) {
+      this.db.prepare(`DELETE FROM index_map WHERE msg_id = ?`).run(row.id);
+    }
     this.db.prepare(`DELETE FROM records WHERE collection = ?`).run(collection);
   }
 
@@ -99,21 +126,41 @@ class Cache {
     return row.count > 0;
   }
 
-
-  // TTL------------------
-
   purgeExpired(): number {
     const now = Math.floor(Date.now() / 1000);
+    // Clean index_map for expired records
+    this.db.prepare(`
+      DELETE FROM index_map WHERE msg_id IN (
+        SELECT id FROM records WHERE expires_at IS NOT NULL AND expires_at <= ?
+      )
+    `).run(now);
     const result = this.db.prepare(`
       DELETE FROM records WHERE expires_at IS NOT NULL AND expires_at <= ?
     `).run(now);
     return result.changes;
   }
 
-  //------------also inti and update some of teh insert adn some other codes 
-
-
-
+  private matches(doc: any, filter: Record<string, any>): boolean {
+    return Object.entries(filter).every(([key, value]) => {
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        return Object.entries(value).every(([op, operand]) => {
+          switch (op) {
+            case '$gt':  return doc[key] > (operand as any);
+            case '$gte': return doc[key] >= (operand as any);
+            case '$lt':  return doc[key] < (operand as any);
+            case '$lte': return doc[key] <= (operand as any);
+            case '$ne':  return doc[key] !== (operand as any);
+            case '$in':  return (operand as any[]).includes(doc[key]);
+            case '$nin': return !(operand as any[]).includes(doc[key]);
+            case '$contains': return String(doc[key]).toLowerCase().includes(String(operand as any).toLowerCase());
+            case '$exists': return (operand as any) ? key in doc : !(key in doc);
+            default: return false;
+          }
+        });
+      }
+      return doc[key] === value;
+    });
+  }
 }
 
 export const cache = new Cache();

@@ -40,15 +40,6 @@ export class FileSizeError extends GmailDBError {
   }
 }
 
-
-
-
-
-// ----------// 
-
-
-
-
 export class NetworkError extends GmailDBError {
   constructor(message = 'Network request failed. Check your internet connection.') {
     super(message, 'NETWORK_ERROR');

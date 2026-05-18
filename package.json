@@ -1,6 +1,6 @@
 {
   "name": "gmaildb",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "One SDK for your entire backend. Store JSON data, upload images, PDFs and files — all inside your Gmail account. Zero cost, no Supabase, no Cloudinary, no AWS S3. Just npm install gmaildb and you're done.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

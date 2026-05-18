@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
 import { google } from 'googleapis';
+import * as url from 'url';
 
 // Simple color helpers without chalk ESM issues
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
@@ -94,8 +95,8 @@ async function main() {
 
   await new Promise<void>((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
-      const parsedUrl = new URL(req.url || '', 'http://localhost:3000');
-      const code = parsedUrl.searchParams.get('code') as string;
+    const parsedUrl = new URL(req.url || '', 'http://localhost:3000');
+    const code = parsedUrl.searchParams.get('code') as string;
       if (code) {
         res.end('<h1>✅ GmailDB authenticated! You can close this tab.</h1>');
         server.close();

@@ -33,14 +33,14 @@ npm install gmaildb
 npx gmaildb init
 ```
 
-This walks you through:
-- Entering your Google OAuth credentials
-- Authenticating with Google
-- Creating your `.env` file automatically
-- Saving your `token.json` automatically
-- Generating an example file to get started
+This automatically:
+- Asks for your Google OAuth credentials
+- Opens browser for authentication
+- Creates `.env` file
+- Saves `token.json`
+- Generates a starter example file
 
-No manual setup required.
+No manual configuration needed.
 
 ## Manual Setup (alternative)
 
@@ -258,7 +258,7 @@ try {
 ```
 
 ## Features
-- ✅ Setup CLI — `npx gmaildb init`
+- ✅ Setup CLI — `npx gmaildb init` — zero manual setup for any new project
 - ✅ Full CRUD — insert, insertMany, find, findOne, findById, update, updateMany, delete, deleteMany, deleteAll
 - ✅ exists() — check if record exists
 - ✅ distinct() — get unique field values

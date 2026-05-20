@@ -59,7 +59,7 @@ export class GmailEngine {
 
           if (isNetworkError && attempt < maxAttempts) {
             const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
-            console.log(`🔄 Network error, retrying in ${delay/1000}s... (attempt ${attempt}/${maxAttempts})`);
+            console.log(`🔄 Network error, retrying in ${delay / 1000}s... (attempt ${attempt}/${maxAttempts})`);
             await new Promise(r => setTimeout(r, delay));
             continue;
           }
@@ -253,15 +253,24 @@ export class GmailEngine {
       id: attachment.body.attachmentId,
     });
 
-    const data = Buffer.from(attRes.data.data, 'base64');
+    // Decrypt file
     const rawMeta = Buffer.from(metadata?.body?.data || '', 'base64').toString('utf-8');
-
     let meta: any;
     try {
-      const decrypted = decrypt(rawMeta, SECRET);
-      meta = JSON.parse(decrypted);
+      const decryptedMeta = decrypt(rawMeta, SECRET);
+      meta = JSON.parse(decryptedMeta);
     } catch {
       meta = JSON.parse(rawMeta);
+    }
+
+    let data: Buffer;
+    try {
+      const encryptedData = Buffer.from(attRes.data.data, 'base64').toString('utf-8');
+      const decryptedBase64 = decrypt(encryptedData, SECRET);
+      data = Buffer.from(decryptedBase64, 'base64');
+    } catch {
+      // fallback for old unencrypted files
+      data = Buffer.from(attRes.data.data, 'base64');
     }
 
     return { data, filename: meta.filename, mimeType: meta.mimeType };

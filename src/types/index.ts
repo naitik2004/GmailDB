@@ -69,3 +69,7 @@ export interface FileResult {
   /** MIME type */
   mimeType: string;
 }
+export interface AggregateResult {
+  value: any;
+  count: number;
+}

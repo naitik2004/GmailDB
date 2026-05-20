@@ -202,6 +202,55 @@ await notes.insert({
 | `$contains` | String contains | `{ name: { $contains: 'ary' } }` |
 | `$exists` | Field exists | `{ phone: { $exists: true } }` |
 
+
+## Hooks
+
+```typescript
+const users = db.collection('users');
+
+// Before insert — modify data
+users.on('beforeInsert', (data) => {
+  return { ...data, createdAt: new Date().toISOString() };
+});
+
+// After insert — side effects
+users.on('afterInsert', (data) => {
+  console.log('New user:', data._id);
+});
+
+// Before delete
+users.on('beforeDelete', (query) => {
+  console.log('Deleting:', query);
+});
+```
+
+## Real-time Polling
+
+```typescript
+const messages = db.collection('messages');
+
+// Poll every 3 seconds
+messages.startPolling(3000, (docs) => {
+  console.log('New messages:', docs);
+});
+
+// Stop polling
+messages.stopPolling();
+```
+
+## Aggregate
+
+```typescript
+// Count users by role
+const byRole = await users.aggregate('role');
+console.log(byRole);
+// [{ value: 'admin', count: 5 }, { value: 'user', count: 12 }]
+
+// Aggregate with filter
+const activeByRole = await users.aggregate('role', { active: true });
+```
+
+
 ## TypeScript Support
 
 GmailDB is fully typed. All methods have proper return types:
@@ -280,6 +329,10 @@ try {
 - ✅ JSDoc on every method
 - ✅ Full error classes with error codes
 - ✅ 21 unit and integration tests
+- ✅ Hooks — beforeInsert, afterInsert, beforeUpdate, afterUpdate, beforeDelete, afterDelete
+- ✅ Real-time polling — detect new records automatically
+- ✅ aggregate() — group and count by field
+- ✅ Binary file encryption — images and PDFs encrypted at rest
 
 ## Limitations
 - 25MB max file size (Gmail limit)
@@ -305,7 +358,10 @@ try {
 - [x] Full TypeScript types
 - [x] JSDoc
 - [x] Unit and integration tests
-- [ ] Binary file encryption
+- [x] Hooks
+- [x] Real-time polling
+- [x] aggregate()
+- [x] Binary file encryption
 - [ ] Multi-user OAuth
 - [ ] VS Code extension
 - [ ] Demo website

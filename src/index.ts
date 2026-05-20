@@ -26,3 +26,6 @@ export type {
   UploadResult,
   FileResult,
 } from './types/index.js';
+
+export { Hooks } from './core/hooks.js';
+export type { AggregateResult } from './types/index.js';

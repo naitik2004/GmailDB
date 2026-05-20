@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { syncCollection } from '../core/sync.js';
 import { encrypt, decrypt } from '../core/encryption.js';
 import { ValidationError, FileSizeError, NotFoundError } from '../core/errors.js';
+import { Hooks } from '../core/hooks.js';
 import type {
   GmailDBDocument,
   InsertResult,
@@ -20,21 +21,83 @@ dotenv.config();
 const SECRET = process.env.GMAILDB_SECRET || 'default_secret';
 
 export class Collection {
+  private hooks = new Hooks();
+  private pollingInterval: ReturnType<typeof setInterval> | null = null;
+
   constructor(
     private name: string,
     private engine: GmailEngine
   ) {}
 
   /**
-   * Insert a single document into the collection.
-   * @param data - Plain object to store
-   * @param options - Optional TTL in days
-   * @returns Inserted document with generated _id and msgId
+   * Register a hook for collection events.
+   * @param event - beforeInsert | afterInsert | beforeDelete | afterDelete | beforeUpdate | afterUpdate
+   * @param fn - Hook function receiving the document data
    */
-  async insert(
-    data: Record<string, any>,
-    options?: { ttl?: number }
-  ): Promise<{ id: string; msgId: string; data: Record<string, any> }> {
+  on(event: 'beforeInsert' | 'afterInsert' | 'beforeDelete' | 'afterDelete' | 'beforeUpdate' | 'afterUpdate', fn: (data: any) => any): void {
+    this.hooks.register(event, fn);
+  }
+
+  /**
+   * Start polling for new records every X milliseconds.
+   * @param intervalMs - Polling interval in milliseconds (default: 5000)
+   * @param callback - Called with new documents when found
+   */
+  startPolling(intervalMs: number = 5000, callback: (docs: any[]) => void): void {
+    if (this.pollingInterval) this.stopPolling();
+    let lastCount = 0;
+
+    this.pollingInterval = setInterval(async () => {
+      try {
+        const docs = await this.find();
+        if (docs.length !== lastCount) {
+          lastCount = docs.length;
+          callback(docs);
+        }
+      } catch {}
+    }, intervalMs);
+  }
+
+  /**
+   * Stop polling.
+   */
+  stopPolling(): void {
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+      this.pollingInterval = null;
+    }
+  }
+
+  /**
+   * Aggregate documents by a field — group and count.
+   * @param field - Field to group by
+   * @param filter - Optional filter to apply first
+   * @returns Array of { value, count } objects
+   */
+  async aggregate(field: string, filter?: Record<string, any>): Promise<{ value: any; count: number }[]> {
+    if (!field || typeof field !== 'string') {
+      throw new ValidationError('aggregate() requires a field name.');
+    }
+    await syncCollection(this.engine, this.name);
+    const docs = cache.find(this.name, filter);
+    const groups = new Map<any, number>();
+
+    for (const doc of docs) {
+      const val = doc[field];
+      if (val !== undefined) {
+        groups.set(val, (groups.get(val) || 0) + 1);
+      }
+    }
+
+    return Array.from(groups.entries())
+      .map(([value, count]) => ({ value, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  /**
+   * Insert a single document into the collection.
+   */
+  async insert(data: Record<string, any>, options?: InsertOptions): Promise<InsertResult> {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       throw new ValidationError('insert() requires a plain object.');
     }
@@ -42,9 +105,10 @@ export class Collection {
       throw new ValidationError('Cannot insert an empty object.');
     }
 
+    const processedData = await this.hooks.run('beforeInsert', data);
     const docId = randomUUID();
     const dataWithId = {
-      ...data,
+      ...processedData,
       _id: docId,
       ...(options?.ttl ? {
         _ttl: options.ttl,
@@ -56,15 +120,15 @@ export class Collection {
     const encrypted = encrypt(JSON.stringify(dataWithId), SECRET);
     const msgId = await this.engine.insertMessage(labelId, `gmaildb:${this.name}`, encrypted);
     cache.set(msgId, this.name, dataWithId, options?.ttl);
+
+    await this.hooks.run('afterInsert', dataWithId);
     return { id: docId, msgId, data: dataWithId };
   }
 
   /**
    * Insert multiple documents at once.
-   * @param docs - Array of plain objects to store
-   * @returns Number of inserted documents and their IDs
    */
-  async insertMany(docs: Record<string, any>[]): Promise<{ inserted: number; ids: string[] }> {
+  async insertMany(docs: Record<string, any>[]): Promise<InsertManyResult> {
     if (!Array.isArray(docs) || docs.length === 0) {
       throw new ValidationError('insertMany() requires a non-empty array.');
     }
@@ -86,18 +150,11 @@ export class Collection {
 
   /**
    * Find all documents matching an optional filter.
-   * @param filter - Optional filter object with query operators
-   * @param options - Optional pagination, sorting
-   * @returns Array of matching documents
    */
-  async find(
-    filter?: Record<string, any>,
-    options?: { limit?: number; skip?: number; sort?: { field: string; order: 'asc' | 'desc' }; fields?: string[] }
-  ): Promise<any[]> {
+  async find(filter?: Record<string, any>, options?: FindOptions): Promise<GmailDBDocument[]> {
     await syncCollection(this.engine, this.name);
     let results = cache.find(this.name, filter);
 
-    // Sort
     if (options?.sort) {
       const { field, order } = options.sort;
       results.sort((a, b) => {
@@ -107,13 +164,11 @@ export class Collection {
       });
     }
 
-    // Pagination
     const skip = options?.skip || 0;
     const limit = options?.limit;
     results = results.slice(skip);
     if (limit) results = results.slice(0, limit);
 
-    // Field projection
     if (options?.fields && options.fields.length > 0) {
       results = results.map(doc => {
         const projected: Record<string, any> = { id: doc.id, _id: doc._id };
@@ -128,12 +183,9 @@ export class Collection {
   }
 
   /**
-   * Find a single document by its _id.
-   * O(1) lookup — does not scan all records.
-   * @param id - The _id of the document
-   * @returns The document or throws NotFoundError
+   * Find a single document by its _id. O(1) lookup.
    */
-  async findById(id: string): Promise<any> {
+  async findById(id: string): Promise<GmailDBDocument> {
     if (!id || typeof id !== 'string') {
       throw new ValidationError('findById() requires a valid string ID.');
     }
@@ -144,10 +196,8 @@ export class Collection {
 
   /**
    * Find a single document matching a filter.
-   * @param filter - Filter object
-   * @returns The first matching document or throws NotFoundError
    */
-  async findOne(filter: Record<string, any>): Promise<any> {
+  async findOne(filter: Record<string, any>): Promise<GmailDBDocument> {
     if (filter._id) {
       const doc = cache.getByDocId(filter._id);
       if (!doc) throw new NotFoundError(this.name, filter);
@@ -160,8 +210,6 @@ export class Collection {
 
   /**
    * Check if a document matching the filter exists.
-   * @param filter - Filter object
-   * @returns true if exists, false otherwise
    */
   async exists(filter: Record<string, any>): Promise<boolean> {
     if (!filter || Object.keys(filter).length === 0) {
@@ -177,8 +225,6 @@ export class Collection {
 
   /**
    * Count documents matching an optional filter.
-   * @param filter - Optional filter object
-   * @returns Number of matching documents
    */
   async count(filter?: Record<string, any>): Promise<number> {
     await syncCollection(this.engine, this.name);
@@ -187,9 +233,6 @@ export class Collection {
 
   /**
    * Get distinct values of a field.
-   * @param field - Field name to get distinct values of
-   * @param filter - Optional filter to apply before getting distinct values
-   * @returns Array of unique values
    */
   async distinct(field: string, filter?: Record<string, any>): Promise<any[]> {
     if (!field || typeof field !== 'string') {
@@ -202,11 +245,7 @@ export class Collection {
   }
 
   /**
-   * Update documents matching a filter.
-   * Uses O(1) lookup when filtering by _id.
-   * @param filter - Filter to find documents
-   * @param changes - Fields to update
-   * @returns Number of updated documents
+   * Update documents matching a filter. O(1) when filtering by _id.
    */
   async update(filter: Record<string, any>, changes: Record<string, any>): Promise<number> {
     if (!filter || Object.keys(filter).length === 0) {
@@ -216,7 +255,8 @@ export class Collection {
       throw new ValidationError('update() requires a changes object.');
     }
 
-    // Fast path — direct _id lookup
+    const processedChanges = await this.hooks.run('beforeUpdate', changes);
+
     if (filter._id) {
       const msgId = cache.getMsgIdByDocId(filter._id);
       if (!msgId) return 0;
@@ -230,17 +270,17 @@ export class Collection {
         doc = JSON.parse(body);
       }
 
-      const newDoc = { ...doc, ...changes };
+      const newDoc = { ...doc, ...processedChanges };
       await this.engine.trashMessage(msgId);
       cache.delete(msgId);
       const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
       const encrypted = encrypt(JSON.stringify(newDoc), SECRET);
       const newId = await this.engine.insertMessage(labelId, `gmaildb:${this.name}`, encrypted);
       cache.set(newId, this.name, newDoc);
+      await this.hooks.run('afterUpdate', newDoc);
       return 1;
     }
 
-    // Slow path — full scan
     await syncCollection(this.engine, this.name);
     const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
     const messages = await this.engine.listMessages(labelId);
@@ -257,12 +297,13 @@ export class Collection {
           doc = JSON.parse(body);
         }
         if (this.matches(doc, filter)) {
-          const newDoc = { ...doc, ...changes };
+          const newDoc = { ...doc, ...processedChanges };
           await this.engine.trashMessage(msg.id);
           cache.delete(msg.id);
           const encrypted = encrypt(JSON.stringify(newDoc), SECRET);
           const newId = await this.engine.insertMessage(labelId, `gmaildb:${this.name}`, encrypted);
           cache.set(newId, this.name, newDoc);
+          await this.hooks.run('afterUpdate', newDoc);
           updated++;
         }
       } catch {}
@@ -272,32 +313,27 @@ export class Collection {
 
   /**
    * Update multiple documents matching a filter.
-   * @param filter - Filter to find documents
-   * @param changes - Fields to update
-   * @returns Number of updated documents
    */
   async updateMany(filter: Record<string, any>, changes: Record<string, any>): Promise<number> {
     return this.update(filter, changes);
   }
 
   /**
-   * Delete a single document matching a filter or _id string.
-   * Uses O(1) lookup when filtering by _id.
-   * @param filter - Filter object or _id string
+   * Delete a single document. O(1) when filtering by _id.
    */
   async deleteOne(filter: string | Record<string, any>): Promise<void> {
     const query = typeof filter === 'string' ? { _id: filter } : filter;
+    await this.hooks.run('beforeDelete', query);
 
-    // Fast path — direct _id lookup
     if (query._id) {
       const msgId = cache.getMsgIdByDocId(query._id);
       if (!msgId) throw new NotFoundError(this.name, query);
       await this.engine.trashMessage(msgId);
       cache.delete(msgId);
+      await this.hooks.run('afterDelete', query);
       return;
     }
 
-    // Slow path — full scan
     await syncCollection(this.engine, this.name);
     const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
     const messages = await this.engine.listMessages(labelId);
@@ -315,6 +351,7 @@ export class Collection {
         if (this.matches(doc, query)) {
           await this.engine.trashMessage(msg.id);
           cache.delete(msg.id);
+          await this.hooks.run('afterDelete', doc);
           return;
         }
       } catch {}
@@ -324,10 +361,8 @@ export class Collection {
 
   /**
    * Delete multiple documents matching a filter.
-   * @param filter - Filter object
-   * @returns Number of deleted documents
    */
-  async deleteMany(filter: Record<string, any>): Promise<{ deleted: number }> {
+  async deleteMany(filter: Record<string, any>): Promise<DeleteResult> {
     if (!filter || Object.keys(filter).length === 0) {
       throw new ValidationError('deleteMany() requires a filter. To delete all use: deleteAll()');
     }
@@ -348,8 +383,10 @@ export class Collection {
           doc = JSON.parse(body);
         }
         if (this.matches(doc, filter)) {
+          await this.hooks.run('beforeDelete', doc);
           await this.engine.trashMessage(msg.id);
           cache.delete(msg.id);
+          await this.hooks.run('afterDelete', doc);
           deleted++;
         }
       } catch {}
@@ -360,9 +397,8 @@ export class Collection {
 
   /**
    * Delete all documents in the collection.
-   * @returns Number of deleted documents
    */
-  async deleteAll(): Promise<{ deleted: number }> {
+  async deleteAll(): Promise<DeleteResult> {
     await syncCollection(this.engine, this.name);
     const labelId = await this.engine.ensureLabel(`gmaildb/${this.name}`);
     const messages = await this.engine.listMessages(labelId);
@@ -379,12 +415,8 @@ export class Collection {
 
   /**
    * Upload a file to Gmail as an attachment.
-   * @param filename - Name of the file
-   * @param fileBuffer - File contents as Buffer
-   * @param mimeType - MIME type of the file
-   * @returns Uploaded file ID and filename
    */
-  async upload(filename: string, fileBuffer: Buffer, mimeType: string): Promise<{ id: string; filename: string }> {
+  async upload(filename: string, fileBuffer: Buffer, mimeType: string): Promise<UploadResult> {
     if (!filename || !mimeType) {
       throw new ValidationError('upload() requires filename and mimeType.');
     }
@@ -402,17 +434,14 @@ export class Collection {
 
   /**
    * Download a file from Gmail by message ID.
-   * @param messageId - Gmail message ID of the uploaded file
-   * @returns File data, filename, and mimeType
    */
-  async getFile(messageId: string): Promise<{ data: Buffer; filename: string; mimeType: string }> {
+  async getFile(messageId: string): Promise<FileResult> {
     if (!messageId) throw new ValidationError('getFile() requires a messageId.');
     return this.engine.getAttachment(messageId);
   }
 
   /**
    * Purge all expired records from local cache.
-   * @returns Number of purged records
    */
   purgeExpired(): number {
     return cache.purgeExpired();
